@@ -1,0 +1,19 @@
+[project]
+name = "strix-sar-processor"
+version = "0.1.0"
+description = "Simple Single Look Complex (SLC) image processing for Synspective's StriX satellites."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "sarpy",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.uv]
+package = false
