@@ -14,21 +14,22 @@ REPO_ROOT = Path(__file__).resolve().parent
 
 def open_slc(path: str | Path) -> tuple[SICDTypeReader, SICDType]:
     """Open an SLC NITF file and its SICD metadata."""
+
     reader = open_complex(str(path))
     sicd = reader.get_sicds_as_tuple()[0]
     return reader, sicd
 
 
-def format_wgt(direction: DirParamType) -> str:
-    w = direction.WgtType
-    return w.WindowName if w is not None else "None"
-
-
 def slant_range_at_row(reader: SICDTypeReader, sicd: SICDType, row: int) -> float:
     """Slant range (m) of a data row."""
 
+    # Slant range at SCP    
     r_scp = sicd.SCPCOA.SlantRange
+
+    # Full row index
     full_row = row + sicd.ImageData.FirstRow
+
+    # Slant range at row
     return r_scp + (full_row - sicd.ImageData.SCPPixel.Row) * sicd.Grid.Row.SS
 
 
@@ -46,7 +47,7 @@ def describe(reader: SICDTypeReader, sicd: SICDType, path: str | Path | None = N
         print(name)
         print(f"  SS (m): {direction.SS}")
         print(f"  ImpRespBW (cyc/m): {direction.ImpRespBW:.4f}")
-        print(f"  WgtType: {format_wgt(direction)}")
+        print(f"  WgtType: {direction.WgtType.WindowName}")
         print(f"  DeltaKCOAPoly (cyc/m): {direction.DeltaKCOAPoly.Coefs}")
     near = slant_range_at_row(reader, sicd, 0)
     far = slant_range_at_row(reader, sicd, rows - 1)
