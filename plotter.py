@@ -11,6 +11,12 @@ import numpy as np
 from sarpy.io.complex.base import SICDTypeReader
 from sarpy.io.complex.sicd_elements.SICD import SICDType
 
+from windowing import (
+    apply_range_hanning,
+    multilooked_power,
+    occupied_band,
+    range_hanning_window,
+)
 from loader import describe, open_slc
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
@@ -20,15 +26,15 @@ def mean_range_spectrum(
     data: np.ndarray,
     sample_spacing: float,
     sgn: int,
-    band: tuple[float, float] | None = None,
+    band: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Mean range power spectrum of a `(range, azimuth)` block."""
 
     spectrum = np.fft.fft(data, axis=0)
     mean_power = np.mean(np.abs(spectrum) ** 2, axis=1, dtype=np.float64)
 
-    # Sgn flips the frequency axis to match the SICD sign convention.
-    frequency = sgn * np.fft.fftfreq(data.shape[0], d=sample_spacing)
+    # With Sgn = -1 this is fftfreq. See _band_bins.
+    frequency = -sgn * np.fft.fftfreq(data.shape[0], d=sample_spacing)
     order = np.argsort(frequency)
     frequency = frequency[order]
     mean_power = mean_power[order]
@@ -52,44 +58,6 @@ def center_column_block(
     start = max(0, min(center - n_columns // 2, n_cols - n_columns))
     stop = min(n_cols, start + n_columns)
     return np.asarray(reader[:, start:stop]), start
-
-
-def multilook(power: np.ndarray, row_step: int, col_step: int) -> np.ndarray:
-    """Average power over non-overlapping blocks of `row_step` by `col_step`."""
-
-    # Trim edges so the array divides evenly.
-    r = power.shape[0] // row_step * row_step
-    c = power.shape[1] // col_step * col_step
-
-    p = power[:r, :c].reshape(r // row_step, row_step, c // col_step, col_step)
-    return p.mean(axis=(1, 3))
-
-
-def multilooked_power(
-    reader: SICDTypeReader,
-    sicd: SICDType,
-    row_step: int = 4,
-    col_step: int = 16,
-    block_cols: int = 2048,
-) -> np.ndarray:
-    """Multilooked power, averaged over each `row_step` by `col_step` block."""
-
-    n_rows = sicd.ImageData.NumRows
-    n_cols = sicd.ImageData.NumCols
-
-    # Block width is a multiple of col_step so looks never straddle two reads.
-    block_cols = col_step * max(1, block_cols // col_step)
-
-    power = np.empty((n_rows // row_step, n_cols // col_step), dtype=np.float32)
-    out_col = 0
-    for start in range(0, n_cols, block_cols):
-        stop = min(n_cols, start + block_cols)
-        block = np.asarray(reader[:, start:stop])
-        looked = multilook(np.abs(block) ** 2, row_step, col_step)
-        power[:, out_col : out_col + looked.shape[1]] = looked
-        out_col += looked.shape[1]
-
-    return power
 
 
 def plot_mean_range_spectrum(
@@ -175,22 +143,59 @@ def plot_db_overview(
     plt.close(fig)
 
 
+def plot_hanning_window(
+    frequency: np.ndarray,
+    decibels: np.ndarray,
+    window: np.ndarray,
+    output_path: Path,
+) -> None:
+    """Save the mean range spectrum before and after the Hanning window."""
+
+    weighted = decibels + 10.0 * np.log10(window ** 2 + 1e-12)
+    fig, ax = plt.subplots(figsize=(8.5, 4.6))
+    ax.plot(frequency, decibels, color="0.1", lw=1.0, label="Unweighted")
+    ax.plot(frequency, weighted, color="C1", lw=1.2, label="Hanning")
+    floor = max(float(np.min(decibels)), -70.0)
+    top = max(float(np.max(decibels)), float(np.max(weighted[window > 1e-3]))) + 1.0
+    ax.set_ylim(floor, top)
+    ax.set_xlabel("Range spatial frequency offset from KCtr (cycles/m)")
+    ax.set_ylabel("Power (dB)")
+    ax.set_title("Range spectrum after Hanning")
+    ax.grid(True, alpha=0.3)
+    ax.legend(
+        loc="lower center",
+        frameon=True,
+        facecolor="white",
+        edgecolor="0.8",
+    )
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=140)
+    plt.close(fig)
+
+
 def render(
     reader: SICDTypeReader,
     sicd: SICDType,
     output_dir: Path = OUTPUT_DIR,
     n_columns: int = 1024,
 ) -> None:
-    """Write the mean range spectrum and the power overview."""
+    """Write the spectrum, Hanning comparison and power overview."""
 
     block, start = center_column_block(reader, sicd, n_columns)
     row = sicd.Grid.Row
-    frequency, decibels = mean_range_spectrum(
-        block, row.SS, row.Sgn, band=(row.DeltaK1, row.DeltaK2)
-    )
+    band = occupied_band(row)
+    frequency, decibels = mean_range_spectrum(block, row.SS, row.Sgn, band)
     spectrum_path = output_dir / "mean_range_spectrum.png"
     plot_mean_range_spectrum(frequency, decibels, sicd, spectrum_path, n_columns=block.shape[1])
     print(f"Range spectrum from columns {start}:{start + block.shape[1]}, saved to {spectrum_path}")
+
+    fft_frequency = -row.Sgn * np.fft.fftfreq(block.shape[0], d=row.SS)
+    order = np.argsort(fft_frequency)
+    window = range_hanning_window(block.shape[0], row.SS, row.Sgn, *band)
+    window_path = output_dir / "hanning_window.png"
+    plot_hanning_window(frequency, decibels, window[order], window_path)
+    print(f"Hanning window saved to {window_path}")
 
     row_step, col_step = 4, 16
     power = multilooked_power(reader, sicd, row_step=row_step, col_step=col_step)
