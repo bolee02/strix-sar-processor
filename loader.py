@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 from sarpy.io.complex.base import SICDTypeReader
 from sarpy.io.complex.converter import open_complex
-from sarpy.io.complex.sicd_elements.Grid import DirParamType
 from sarpy.io.complex.sicd_elements.SICD import SICDType
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -23,13 +22,8 @@ def open_slc(path: str | Path) -> tuple[SICDTypeReader, SICDType]:
 def slant_range_at_row(reader: SICDTypeReader, sicd: SICDType, row: int) -> float:
     """Slant range (m) of a data row."""
 
-    # Slant range at SCP    
     r_scp = sicd.SCPCOA.SlantRange
-
-    # Full row index
     full_row = row + sicd.ImageData.FirstRow
-
-    # Slant range at row
     return r_scp + (full_row - sicd.ImageData.SCPPixel.Row) * sicd.Grid.Row.SS
 
 
@@ -53,7 +47,8 @@ def describe(reader: SICDTypeReader, sicd: SICDType, path: str | Path | None = N
     far = slant_range_at_row(reader, sicd, rows - 1)
     print(f"Row 0 slant range: {near:.1f} m, last row: {far:.1f} m ")
 
-def main():
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Print SLC grid metadata.")
     parser.add_argument("slc", type=Path, help="path to the SLC .nitf file")
     args = parser.parse_args()
