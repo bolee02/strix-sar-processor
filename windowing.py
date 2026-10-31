@@ -59,6 +59,20 @@ def _band_bins(n: int, sample_spacing: float, sgn: int, low: float, high: float)
     return inside[np.argsort(frequency[inside])]
 
 
+def rectangular_window(
+    n: int,
+    sample_spacing: float,
+    sgn: int,
+    low: float,
+    high: float,
+) -> np.ndarray:
+    """Ones on `[low, high]` and zero outside, in `np.fft.fft` order."""
+
+    window = np.zeros(n, dtype=np.float64)
+    window[_band_bins(n, sample_spacing, sgn, low, high)] = 1.0
+    return window
+
+
 def range_hanning_window(
     n: int,
     sample_spacing: float,
