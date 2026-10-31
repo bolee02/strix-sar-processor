@@ -26,6 +26,7 @@ HARBOR_COLS = (13200, 14400)
 RANGE_CUT_ROW = 1544
 RANGE_CUT_COLUMN = 13608
 RANGE_CUT_HALF_ROWS = 30
+RANGE_CUT_OVERSAMPLE = 16
 
 
 def mean_range_spectrum(
@@ -180,6 +181,22 @@ def plot_hanning_window(
     plt.close(fig)
 
 
+def oversampled_range_power(line: np.ndarray, oversample: int) -> np.ndarray:
+    """Power of one range line, interpolated by zero-padding its spectrum.
+
+    Zeros go between the positive and negative frequencies, as in
+    `impulse_response_metrics`.
+    """
+
+    spectrum = np.fft.fft(line)
+    n = line.size
+    padded = np.zeros(n * oversample, dtype=np.complex128)
+    half = n // 2
+    padded[:half] = spectrum[:half]
+    padded[-(n - half) :] = spectrum[half:]
+    return np.abs(np.fft.ifft(padded)) ** 2
+
+
 def plot_harbor(
     before: np.ndarray,
     after: np.ndarray,
@@ -231,29 +248,32 @@ def plot_harbor(
     fig.colorbar(shown, cax=fig.add_subplot(grid[0, 2]), label="Power (dB)")
 
     column = RANGE_CUT_COLUMN - cols[0]
-    search = slice(RANGE_CUT_ROW - 2, RANGE_CUT_ROW + 3)
-    center = search.start + int(np.argmax(np.abs(before[search, column]) ** 2))
-    start = center - RANGE_CUT_HALF_ROWS
-    stop = center + RANGE_CUT_HALF_ROWS + 1
-    row_axis = np.arange(start, stop)
-    before_power = np.abs(before[start:stop, column]) ** 2
-    after_power = np.abs(after[start:stop, column]) ** 2
+    factor = RANGE_CUT_OVERSAMPLE
+    before_power = oversampled_range_power(before[:, column], factor)
+    after_power = oversampled_range_power(after[:, column], factor)
+    guess = RANGE_CUT_ROW * factor
+    search = slice(guess - 2 * factor, guess + 3 * factor)
+    center = search.start + int(np.argmax(before_power[search]))
+    half = RANGE_CUT_HALF_ROWS * factor
+    sl = slice(center - half, center + half + 1)
+    row_axis = np.arange(sl.start, sl.stop) / factor
     cut = fig.add_subplot(grid[1, :2])
     cut.plot(
         row_axis,
-        10.0 * np.log10(before_power / before_power.max()),
+        10.0 * np.log10(before_power[sl] / before_power[sl].max()),
         color="0.2",
         lw=1,
         label="Unweighted",
     )
     cut.plot(
         row_axis,
-        10.0 * np.log10(after_power / after_power.max()),
+        10.0 * np.log10(after_power[sl] / after_power[sl].max()),
         color="C1",
         lw=1,
         label="Hanning",
     )
-    cut.set_xlim(row_axis[0], row_axis[-1])
+    peak_row = center / factor
+    cut.set_xlim(peak_row - RANGE_CUT_HALF_ROWS, peak_row + RANGE_CUT_HALF_ROWS)
     cut.set_ylim(-40, 3)
     cut.set_xlabel("Row")
     cut.set_ylabel("Power (dB, peak = 0)")
