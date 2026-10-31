@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from windowing import (
     apply_range_hanning,
     apply_range_window,
+    impulse_response_metrics,
     multilook,
     range_hanning_window,
     rectangular_window,
@@ -77,7 +78,7 @@ def test_hanning_window_is_the_occupied_band() -> None:
     formula = _hanning_formula(inside.size)
     scale = np.sqrt(inside.size / np.sum(formula ** 2))
     assert np.allclose(window[inside], formula * scale), (
-        "window values do not follow 0.5 - 0.5 cos(2πn/(M-1)), scaled to unit mean power"
+        "window values do not follow 0.5 - 0.5 cos(2*pi*n/(M-1)), scaled to unit mean power"
     )
 
 
@@ -111,6 +112,65 @@ def test_offset_band_uses_azimuth_frequency_sign() -> None:
     rejected_power = float(np.mean(np.abs(rejected) ** 2))
     assert kept_power > 0.2, f"in-band tone power fell to {kept_power}"
     assert rejected_power < 1e-6, f"out-of-band tone power is {rejected_power}"
+
+
+def test_impulse_response_matches_theory() -> None:
+    """Rectangular sidelobes near -13.3 dB, Hanning near -31.5 dB, about 1.63x wider."""
+
+    rectangular = rectangular_window(N, SAMPLE_SPACING, SGN, *BAND)
+    hanning = range_hanning_window(N, SAMPLE_SPACING, SGN, *BAND)
+    rectangular_width, rectangular_sidelobe = impulse_response_metrics(rectangular)
+    hanning_width, hanning_sidelobe = impulse_response_metrics(hanning)
+    ratio = hanning_width / rectangular_width
+
+    assert abs(rectangular_sidelobe - (-13.26)) < 0.15, f"rectangular PSLR {rectangular_sidelobe:.2f} dB"
+    assert abs(hanning_sidelobe - (-31.5)) < 0.5, f"Hanning PSLR {hanning_sidelobe:.2f} dB"
+    assert abs(ratio - 1.63) < 0.03, f"width ratio {ratio:.3f}"
+
+
+def test_window_at_real_range_size() -> None:
+    """Same checks at the SLC range length and bandwidth."""
+
+    length = 4388
+    spacing = 1.5
+    bandwidth = 0.50035
+    band = (-bandwidth / 2, bandwidth / 2)
+    window = range_hanning_window(length, spacing, SGN, *band)
+    frequency = _sicd_frequency(length, spacing, SGN)
+    inside = (frequency >= band[0]) & (frequency <= band[1])
+    mean_power = float(np.mean(window[inside] ** 2))
+
+    assert np.all(window[~inside] == 0), "real-size window is non-zero outside the band"
+    assert abs(mean_power - 1.0) < 1e-12, f"real-size mean w^2 is {mean_power}"
+
+    rectangular = rectangular_window(length, spacing, SGN, *band)
+    rectangular_width, rectangular_sidelobe = impulse_response_metrics(rectangular)
+    hanning_width, hanning_sidelobe = impulse_response_metrics(window)
+    ratio = hanning_width / rectangular_width
+    assert abs(rectangular_sidelobe - (-13.26)) < 0.15, f"real-size rectangular PSLR {rectangular_sidelobe:.2f} dB"
+    assert abs(hanning_sidelobe - (-31.5)) < 0.5, f"real-size Hanning PSLR {hanning_sidelobe:.2f} dB"
+    assert abs(ratio - 1.63) < 0.03, f"real-size width ratio {ratio:.3f}"
+
+
+def test_filtered_point_target_has_the_hanning_response() -> None:
+    """A band-limited spike, after the full FFT, window, and IFFT, has the Hanning IR."""
+
+    rectangular = rectangular_window(N, SAMPLE_SPACING, SGN, *BAND)
+    spike = np.fft.ifft(rectangular).astype(np.complex64)[:, np.newaxis]
+    filtered = apply_range_hanning(spike, SAMPLE_SPACING, SGN, *BAND)
+
+    _, unweighted_sidelobe = impulse_response_metrics(np.fft.fft(spike[:, 0]))
+    filtered_width, filtered_sidelobe = impulse_response_metrics(np.fft.fft(filtered[:, 0]))
+    hanning_width, hanning_sidelobe = impulse_response_metrics(range_hanning_window(N, SAMPLE_SPACING, SGN, *BAND))
+
+    assert abs(unweighted_sidelobe - (-13.26)) < 0.2, f"unweighted spike PSLR {unweighted_sidelobe:.2f} dB"
+    assert abs(filtered_sidelobe - hanning_sidelobe) < 0.05, (
+        f"filtered PSLR {filtered_sidelobe:.2f} dB, window {hanning_sidelobe:.2f} dB"
+    )
+    assert abs(filtered_width - hanning_width) < 0.01, (
+        f"filtered width {filtered_width:.4f}, window {hanning_width:.4f}"
+    )
+    assert abs(filtered_sidelobe - (-31.5)) < 0.5, f"filtered PSLR {filtered_sidelobe:.2f} dB"
 
 
 def test_mid_array_point_target_stays_in_place() -> None:
@@ -173,17 +233,48 @@ def test_multilook_4x4() -> None:
     assert np.allclose(looked, expected), f"multilook returned\n{looked}\nexpected\n{expected}"
 
 
+def test_sign_convention_flips_with_sgn() -> None:
+    """Sgn = +1 must mirror the occupied band; Sgn = -1 must not."""
+    low, high = 0.10, 0.20
+    minus = range_hanning_window(256, 1.0, -1, low, high)
+    plus = range_hanning_window(256, 1.0, +1, low, high)
+    mirror = np.roll(minus[::-1], 1)          # bin k -> bin -k
+    assert np.allclose(plus, mirror), "Sgn = +1 does not mirror the band"
+    assert not np.allclose(plus, minus), "window ignores Sgn"
+ 
+
+def test_multilook_unequal_looks() -> None:
+    """Looks (2, 1) average rows only, so a swapped axis is caught."""
+
+    power = np.arange(16, dtype=float).reshape(4, 4)
+    expected = np.array([[2, 3, 4, 5], [10, 11, 12, 13]], dtype=float)
+    looked = multilook(power, 2, 1)
+    assert np.allclose(looked, expected), f"multilook returned\n{looked}\nexpected\n{expected}"
+
+
+def test_multilook_trims_remainder() -> None:
+    power = np.ones((5, 7))
+    looked = multilook(power, 2, 3)
+    assert looked.shape == (2, 2), f"shape {looked.shape}, expected (2, 2)"
+
+
 def run_tests() -> bool:
     """Execute every check and print whether it passed."""
 
     tests = [
         test_hanning_window_is_the_occupied_band,
         test_offset_band_uses_azimuth_frequency_sign,
+        test_impulse_response_matches_theory,
+        test_window_at_real_range_size,
+        test_filtered_point_target_has_the_hanning_response,
         test_mid_array_point_target_stays_in_place,
         test_distributed_power_is_preserved,
         test_rectangular_window_leaves_band_limited_data_unchanged,
         test_shape_and_dtype_are_preserved,
         test_multilook_4x4,
+        test_sign_convention_flips_with_sgn,
+        test_multilook_unequal_looks,
+        test_multilook_trims_remainder,
     ]
     failed = 0
     for test in tests:

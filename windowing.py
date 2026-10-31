@@ -88,7 +88,7 @@ def range_hanning_window(
         return window
     window[inside] = np.hanning(inside.size)
 
-    # Scale the window so the mean of `w²` on the occupied band is 1.
+    # Scale the window so the mean of `w**2` on the occupied band is 1.
     window *= np.sqrt(inside.size / np.sum(window ** 2))
     return window
 
@@ -112,3 +112,42 @@ def apply_range_hanning(
 
     window = range_hanning_window(data.shape[0], sample_spacing, sgn, low, high)
     return apply_range_window(data, window)
+
+
+def impulse_response_metrics(window: np.ndarray, oversample: int = 32) -> tuple[float, float]:
+    """Return the 3 dB width in samples and the peak sidelobe ratio in dB."""
+
+    # Zeros go between the positive and negative frequencies, not after the array.
+    n = window.size
+    padded = np.zeros(n * oversample, dtype=np.complex128)
+    half = n // 2
+    padded[:half] = window[:half]
+    padded[-(n - half) :] = window[half:]
+    profile = np.fft.fftshift(np.fft.ifft(padded))
+    power = np.abs(profile) ** 2
+    decibels = 10.0 * np.log10(np.maximum(power / power.max(), 1e-30))
+    peak = int(np.argmax(power))
+
+    def half_power_cross(direction: int) -> float:
+        index = peak
+        while 0 <= index + direction < decibels.size and decibels[index] > -3.0:
+            index += direction
+        previous = index - direction
+        fraction = (-3.0 - decibels[previous]) / (decibels[index] - decibels[previous])
+        return previous + fraction * direction
+
+    def first_minimum(direction: int) -> int:
+        index = peak + direction
+        while 0 < index < decibels.size - 1:
+            toward_peak = decibels[index - direction]
+            outward = decibels[index + direction]
+            if decibels[index] <= toward_peak and decibels[index] <= outward:
+                return index
+            index += direction
+        return index
+
+    width = (half_power_cross(1) - half_power_cross(-1)) / oversample
+    left = first_minimum(-1)
+    right = first_minimum(1)
+    sidelobes = np.concatenate((decibels[:left], decibels[right + 1 :]))
+    return float(width), float(np.max(sidelobes))
