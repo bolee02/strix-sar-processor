@@ -19,7 +19,7 @@ from windowing import (
 )
 from loader import describe, open_slc
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "output"
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
 HARBOR_ROWS = (1000, 2000)
 HARBOR_COLS = (13200, 14400)
 

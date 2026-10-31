@@ -8,7 +8,7 @@ from sarpy.io.complex.base import SICDTypeReader
 from sarpy.io.complex.converter import open_complex
 from sarpy.io.complex.sicd_elements.SICD import SICDType
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def open_slc(path: str | Path) -> tuple[SICDTypeReader, SICDType]:
