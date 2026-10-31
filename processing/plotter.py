@@ -22,6 +22,10 @@ from loader import describe, open_slc
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
 HARBOR_ROWS = (1000, 2000)
 HARBOR_COLS = (13200, 14400)
+# Isolated point. The bright pixels near column 14301 are a cluster of scatterers.
+RANGE_CUT_ROW = 1544
+RANGE_CUT_COLUMN = 13608
+RANGE_CUT_HALF_ROWS = 30
 
 
 def mean_range_spectrum(
@@ -134,8 +138,8 @@ def plot_db_overview(
         aspect="auto",
         interpolation="nearest",
     )
-    ax.set_xlabel("Column")
-    ax.set_ylabel("Row")
+    ax.set_xlabel("Azimuth")
+    ax.set_ylabel("Range")
     ax.set_title("Power (dB), near range at top")
     fig.colorbar(image, ax=ax, label="Power (dB)", fraction=0.025, pad=0.02)
 
@@ -184,12 +188,18 @@ def plot_harbor(
     output_path: Path,
     note: str | None = None,
 ) -> None:
-    """Compare the harbor chip before and after range Hanning windowing."""
+    """Compare the harbor chip before and after range Hanning windowing.
 
-    reference = float(np.max(np.abs(before) ** 2))
+    `before` and `after` are the full range lines for the harbor columns.
+    """
+
+    row0, row1 = rows
+    chip_before = before[row0:row1]
+    chip_after = after[row0:row1]
+    reference = float(np.max(np.abs(chip_before) ** 2))
     floor = reference * 1e-6
-    db_before = 10.0 * np.log10(np.maximum(np.abs(before) ** 2, floor))
-    db_after = 10.0 * np.log10(np.maximum(np.abs(after) ** 2, floor))
+    db_before = 10.0 * np.log10(np.maximum(np.abs(chip_before) ** 2, floor))
+    db_after = 10.0 * np.log10(np.maximum(np.abs(chip_after) ** 2, floor))
     low, high = np.percentile(db_before, [5, 99])
     extent = (cols[0], cols[1], rows[1], rows[0])
 
@@ -220,24 +230,34 @@ def plot_harbor(
         ax.set_ylabel("Row")
     fig.colorbar(shown, cax=fig.add_subplot(grid[0, 2]), label="Power (dB)")
 
-    peak = np.unravel_index(np.argmax(np.abs(before)), before.shape)
-    peak_index = int(peak[0])
-    peak_col = cols[0] + int(peak[1])
-    half = 80
-    start = max(0, peak_index - half)
-    stop = min(before.shape[0], peak_index + half + 1)
-    sl = slice(start, stop)
-    row_axis = np.arange(rows[0] + start, rows[0] + stop)
-    before_power = np.abs(before[sl, peak[1]]) ** 2
-    after_power = np.abs(after[sl, peak[1]]) ** 2
+    column = RANGE_CUT_COLUMN - cols[0]
+    search = slice(RANGE_CUT_ROW - 2, RANGE_CUT_ROW + 3)
+    center = search.start + int(np.argmax(np.abs(before[search, column]) ** 2))
+    start = center - RANGE_CUT_HALF_ROWS
+    stop = center + RANGE_CUT_HALF_ROWS + 1
+    row_axis = np.arange(start, stop)
+    before_power = np.abs(before[start:stop, column]) ** 2
+    after_power = np.abs(after[start:stop, column]) ** 2
     cut = fig.add_subplot(grid[1, :2])
-    cut.plot(row_axis, 10.0 * np.log10(before_power / before_power.max()), color="0.2", lw=1, label="Unweighted")
-    cut.plot(row_axis, 10.0 * np.log10(after_power / after_power.max()), color="C1", lw=1, label="Hanning")
+    cut.plot(
+        row_axis,
+        10.0 * np.log10(before_power / before_power.max()),
+        color="0.2",
+        lw=1,
+        label="Unweighted",
+    )
+    cut.plot(
+        row_axis,
+        10.0 * np.log10(after_power / after_power.max()),
+        color="C1",
+        lw=1,
+        label="Hanning",
+    )
     cut.set_xlim(row_axis[0], row_axis[-1])
     cut.set_ylim(-40, 3)
     cut.set_xlabel("Row")
     cut.set_ylabel("Power (dB, peak = 0)")
-    cut.set_title(f"Range line at column {peak_col}")
+    cut.set_title(f"Range line at column {RANGE_CUT_COLUMN}")
     cut.grid(True, alpha=0.3)
     cut.legend(frameon=True, facecolor="white", edgecolor="0.8")
 
@@ -272,18 +292,11 @@ def render(
     plot_hanning_window(frequency, decibels, window[order], window_path)
     print(f"Hanning window saved to {window_path}")
 
-    row0, row1 = HARBOR_ROWS
     col0, col1 = HARBOR_COLS
     harbor = np.asarray(reader[:, col0:col1])
     weighted = apply_range_hanning(harbor, row.SS, row.Sgn, *band)
     harbor_path = output_dir / "harbor_hanning.png"
-    plot_harbor(
-        harbor[row0:row1],
-        weighted[row0:row1],
-        HARBOR_ROWS,
-        HARBOR_COLS,
-        harbor_path,
-    )
+    plot_harbor(harbor, weighted, HARBOR_ROWS, HARBOR_COLS, harbor_path)
     print(f"Harbor comparison saved to {harbor_path}")
 
     row_step, col_step = 4, 16
